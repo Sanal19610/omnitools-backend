@@ -12,6 +12,7 @@ app.use(cors());
 
 const YTDLP_PATH = process.env.YTDLP_PATH || (fs.existsSync(path.join(__dirname, 'yt-dlp.exe')) ? path.join(__dirname, 'yt-dlp.exe') : 'yt-dlp');
 const FFMPEG_PATH = process.env.FFMPEG_PATH || (fs.existsSync(path.join(__dirname, 'ffmpeg.exe')) ? path.join(__dirname, 'ffmpeg.exe') : 'ffmpeg');
+const FFMPEG_ARGS = (FFMPEG_PATH && FFMPEG_PATH !== 'ffmpeg' && fs.existsSync(FFMPEG_PATH)) ? ['--ffmpeg-location', FFMPEG_PATH] : [];
 const COOKIE_PATH = process.env.COOKIE_PATH || path.join(__dirname, 'cookies.txt');
 const COOKIE_ARGS = fs.existsSync(COOKIE_PATH) ? ['--cookies', COOKIE_PATH] : [];
 const TEMP_DIR = path.join(__dirname, 'temp');
@@ -391,7 +392,11 @@ app.get('/api/debug-channel-html', (req, res) => {
   });
 });
 
-app.get('/api/download', (req, res) => {
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+const handleDownloadRequest = (req, res) => {
   const videoURL = req.query.url;
   const formatId = req.query.format;
   const hasAudio = req.query.hasAudio === 'true';
@@ -424,7 +429,7 @@ app.get('/api/download', (req, res) => {
         '-x',
         '--audio-format', 'mp3',
         '--audio-quality', '0',
-        '--ffmpeg-location', FFMPEG_PATH,
+        ...FFMPEG_ARGS,
         '-o', tempFilePath,
         videoURL,
       ];
@@ -442,7 +447,7 @@ app.get('/api/download', (req, res) => {
         ...COOKIE_ARGS,
         '-f', formatArg,
         '--merge-output-format', 'mp4',
-        '--ffmpeg-location', FFMPEG_PATH,
+        ...FFMPEG_ARGS,
         '-o', tempFilePath,
         videoURL,
       ];
@@ -480,7 +485,10 @@ app.get('/api/download', (req, res) => {
       }
     });
   });
-});
+};
+
+app.get('/api/download', handleDownloadRequest);
+app.get('/download', handleDownloadRequest);
 
 // ------------------------------------------------------------------
 // INSTAGRAM REELS DOWNLOADER ENDPOINTS (Multi-Browser & Fallback Pipeline)
@@ -513,11 +521,13 @@ function fetchIgInfoMultiBrowser(targetUrl, callback) {
 
     ytdlp.stdout.on('data', (chunk) => { output += chunk.toString(); });
     ytdlp.on('close', (code) => {
-      if (code === 0 && output) {
+      if (code === 0 && output.trim()) {
         try {
-          const data = JSON.parse(output);
-          return callback(null, data);
-        } catch (e) {}
+          const json = JSON.parse(output.trim());
+          return callback(null, json);
+        } catch (e) {
+          // parse failed, try next
+        }
       }
       tryNext();
     });
@@ -527,7 +537,7 @@ function fetchIgInfoMultiBrowser(targetUrl, callback) {
   tryNext();
 }
 
-function downloadIgMultiBrowser(targetUrl, tempFilePath, callback) {
+function fetchIgDownloadMultiBrowser(targetUrl, tempFilePath, callback) {
   const browserList = ['chrome', 'edge', 'firefox', 'brave', 'none'];
   let idx = 0;
 
@@ -540,7 +550,7 @@ function downloadIgMultiBrowser(targetUrl, tempFilePath, callback) {
     const args = [
       '-f', 'best[ext=mp4]/best',
       '--merge-output-format', 'mp4',
-      '--ffmpeg-location', FFMPEG_PATH,
+      ...FFMPEG_ARGS,
       '-o', tempFilePath,
     ];
     if (browser !== 'none') {
