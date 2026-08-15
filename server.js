@@ -13,8 +13,6 @@ app.use(cors());
 const YTDLP_PATH = process.env.YTDLP_PATH || (fs.existsSync(path.join(__dirname, 'yt-dlp.exe')) ? path.join(__dirname, 'yt-dlp.exe') : 'yt-dlp');
 const FFMPEG_PATH = process.env.FFMPEG_PATH || (fs.existsSync(path.join(__dirname, 'ffmpeg.exe')) ? path.join(__dirname, 'ffmpeg.exe') : 'ffmpeg');
 const FFMPEG_ARGS = (FFMPEG_PATH && FFMPEG_PATH !== 'ffmpeg' && fs.existsSync(FFMPEG_PATH)) ? ['--ffmpeg-location', FFMPEG_PATH] : [];
-const COOKIE_PATH = process.env.COOKIE_PATH || path.join(__dirname, 'cookies.txt');
-const COOKIE_ARGS = fs.existsSync(COOKIE_PATH) ? ['--cookies', COOKIE_PATH] : [];
 const TEMP_DIR = path.join(__dirname, 'temp');
 
 if (!fs.existsSync(TEMP_DIR)) {
@@ -184,7 +182,7 @@ app.get('/api/info', (req, res) => {
     return res.status(400).json({ error: 'Please provide a YouTube URL.' });
   }
 
-  const ytdlp = spawn(YTDLP_PATH, [...COOKIE_ARGS, '-j', videoURL]);
+  const ytdlp = spawn(YTDLP_PATH, ['-j', videoURL]);
   let output = '';
   let errorOutput = '';
 
@@ -231,7 +229,7 @@ app.get('/api/metadata', (req, res) => {
     return res.status(400).json({ error: 'Please provide a YouTube URL.' });
   }
 
-  const ytdlp = spawn(YTDLP_PATH, [...COOKIE_ARGS, '-j', videoURL]);
+  const ytdlp = spawn(YTDLP_PATH, ['-j', videoURL]);
   let output = '';
   let errorOutput = '';
 
@@ -448,7 +446,7 @@ const handleDownloadRequest = (req, res) => {
     return res.status(400).json({ error: 'Please provide a YouTube URL.' });
   }
 
-  const infoFetch = spawn(YTDLP_PATH, [...COOKIE_ARGS, '-j', videoURL]);
+  const infoFetch = spawn(YTDLP_PATH, ['-j', videoURL]);
   let infoOutput = '';
   let infoError = '';
   infoFetch.stdout.on('data', (chunk) => { infoOutput += chunk.toString(); });
@@ -471,7 +469,6 @@ const handleDownloadRequest = (req, res) => {
     let args = [];
     if (isAudio) {
       args = [
-        ...COOKIE_ARGS,
         '-x',
         '--audio-format', 'mp3',
         '--audio-quality', '0',
@@ -490,7 +487,6 @@ const handleDownloadRequest = (req, res) => {
       else if (formatId) formatArg = hasAudio ? formatId : `${formatId}+bestaudio/best`;
 
       args = [
-        ...COOKIE_ARGS,
         '-f', formatArg,
         '--merge-output-format', 'mp4',
         ...FFMPEG_ARGS,
@@ -542,7 +538,7 @@ app.get('/api/download', handleDownloadRequest);
 app.get('/download', handleDownloadRequest);
 
 // ------------------------------------------------------------------
-// INSTAGRAM REELS DOWNLOADER ENDPOINTS (Multi-Browser & Fallback Pipeline)
+// INSTAGRAM REELS DOWNLOADER ENDPOINTS (Unauthenticated yt-dlp & Fallback)
 // ------------------------------------------------------------------
 function extractInstagramShortcode(url) {
   if (!url) return null;
@@ -550,80 +546,43 @@ function extractInstagramShortcode(url) {
   return match ? match[1] : null;
 }
 
-function fetchIgInfoMultiBrowser(targetUrl, callback) {
-  const browserList = ['chrome', 'edge', 'firefox', 'brave', 'none'];
-  let idx = 0;
+function fetchIgInfo(targetUrl, callback) {
+  const args = ['-j', targetUrl];
+  const ytdlp = spawn(YTDLP_PATH, args);
+  let output = '';
 
-  function tryNext() {
-    if (idx >= browserList.length) {
-      return callback(new Error('yt-dlp info failed on all browser cookie attempts'));
+  ytdlp.stdout.on('data', (chunk) => { output += chunk.toString(); });
+  ytdlp.on('close', (code) => {
+    if (code === 0 && output.trim()) {
+      try {
+        const json = JSON.parse(output.trim());
+        return callback(null, json);
+      } catch (e) {}
     }
-
-    const browser = browserList[idx++];
-    const args = ['-j', targetUrl];
-    if (browser !== 'none') {
-      args.unshift('--cookies-from-browser', browser);
-    } else if (fs.existsSync(path.join(__dirname, 'cookies.txt'))) {
-      args.unshift(...COOKIE_ARGS);
-    }
-
-    const ytdlp = spawn(YTDLP_PATH, args);
-    let output = '';
-
-    ytdlp.stdout.on('data', (chunk) => { output += chunk.toString(); });
-    ytdlp.on('close', (code) => {
-      if (code === 0 && output.trim()) {
-        try {
-          const json = JSON.parse(output.trim());
-          return callback(null, json);
-        } catch (e) {
-          // parse failed, try next
-        }
-      }
-      tryNext();
-    });
-    ytdlp.on('error', () => tryNext());
-  }
-
-  tryNext();
+    callback(new Error('yt-dlp info failed'));
+  });
+  ytdlp.on('error', (err) => callback(err));
 }
 
-function fetchIgDownloadMultiBrowser(targetUrl, tempFilePath, callback) {
-  const browserList = ['chrome', 'edge', 'firefox', 'brave', 'none'];
-  let idx = 0;
+function fetchIgDownload(targetUrl, tempFilePath, callback) {
+  const args = [
+    '-f', 'best[ext=mp4]/best',
+    '--merge-output-format', 'mp4',
+    ...FFMPEG_ARGS,
+    '-o', tempFilePath,
+    targetUrl,
+  ];
 
-  function tryNext() {
-    if (idx >= browserList.length) {
-      return callback(new Error('yt-dlp download failed on all browser cookie attempts'));
+  console.log('Downloading Instagram Reel via yt-dlp...');
+  const ytdlp = spawn(YTDLP_PATH, args);
+
+  ytdlp.on('close', (code) => {
+    if (code === 0 && fs.existsSync(tempFilePath)) {
+      return callback(null, tempFilePath);
     }
-
-    const browser = browserList[idx++];
-    const args = [
-      '-f', 'best[ext=mp4]/best',
-      '--merge-output-format', 'mp4',
-      ...FFMPEG_ARGS,
-      '-o', tempFilePath,
-    ];
-    if (browser !== 'none') {
-      args.unshift('--cookies-from-browser', browser);
-    } else if (fs.existsSync(path.join(__dirname, 'cookies.txt'))) {
-      args.unshift(...COOKIE_ARGS);
-    }
-    args.push(targetUrl);
-
-    console.log(`Downloading Instagram Reel via browser session (${browser})...`);
-    const ytdlp = spawn(YTDLP_PATH, args);
-
-    ytdlp.on('close', (code) => {
-      if (code === 0 && fs.existsSync(tempFilePath)) {
-        return callback(null, tempFilePath);
-      }
-      tryNext();
-    });
-    ytdlp.on('error', () => tryNext());
-  }
-
-  tryNext();
+    callback(new Error('yt-dlp download failed'));
+  });
+  ytdlp.on('error', (err) => callback(err));
 }
 
 app.get('/api/instagram/info', (req, res) => {
@@ -639,8 +598,8 @@ app.get('/api/instagram/info', (req, res) => {
 
   const targetUrl = `https://www.instagram.com/reel/${shortcode}/`;
 
-  // Attempt 1: Try yt-dlp across local browser sessions (Chrome, Edge, Firefox, Brave, cookies.txt)
-  fetchIgInfoMultiBrowser(targetUrl, (err, data) => {
+  // Attempt 1: Try unauthenticated yt-dlp
+  fetchIgInfo(targetUrl, (err, data) => {
     if (!err && data) {
       const rawTitle = data.title || data.description || `Instagram Reel (${shortcode})`;
       const hashtagsMatch = rawTitle.match(/#[a-zA-Z0-9_]+/g);
@@ -788,11 +747,11 @@ app.get('/api/instagram/download', (req, res) => {
   const safeTitle = `Instagram_Reel_${shortcode}`;
   const tempFilePath = path.join(TEMP_DIR, `${Date.now()}-${safeTitle}.mp4`);
 
-  const runMultiBrowserDownload = () => {
+  const runDownload = () => {
     const targetUrl = `https://www.instagram.com/reel/${shortcode}/`;
-    downloadIgMultiBrowser(targetUrl, tempFilePath, (err, fileReadyPath) => {
+    fetchIgDownload(targetUrl, tempFilePath, (err) => {
       if (err || !fs.existsSync(tempFilePath)) {
-        console.log('Multi-browser IG download fallback for shortcode:', shortcode);
+        console.log('IG download fallback for shortcode:', shortcode);
         return generateFallbackIgVideo(tempFilePath, shortcode, (fallbackErr) => {
           if (fallbackErr || !fs.existsSync(tempFilePath)) {
             if (!res.headersSent) {
@@ -836,18 +795,16 @@ app.get('/api/instagram/download', (req, res) => {
           });
         });
       } else {
-        runMultiBrowserDownload();
+        runDownload();
       }
     }).on('error', () => {
-      runMultiBrowserDownload();
+      runDownload();
     });
     return;
   }
 
-  runMultiBrowserDownload();
+  runDownload();
 });
-
-
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

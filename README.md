@@ -45,9 +45,6 @@ A high-performance Express.js backend server for media processing, YouTube & Ins
    - Download [`yt-dlp.exe`](https://github.com/yt-dlp/yt-dlp/releases) and place it in the root directory.
    - Download [`ffmpeg.exe`](https://ffmpeg.org/download.html) and place it in the root directory.
 
-4. **Add Cookies (Optional / Recommended for bot prevention bypass):**
-   - Export YouTube cookies to `cookies.txt` in the root folder.
-
 ---
 
 ## Running the Server
