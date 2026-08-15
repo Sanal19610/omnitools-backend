@@ -1,5 +1,9 @@
 FROM node:20-slim
 
+# Copy Deno 2.x binary from official Deno image
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
+RUN chmod +x /usr/local/bin/deno
+
 # Install system dependencies: Python3, pip, ffmpeg, and ca-certificates
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -12,7 +16,14 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install yt-dlp via pip (supporting Debian bookworm/PEP 668 environments)
-RUN pip3 install --no-cache-dir --break-system-packages yt-dlp || pip3 install --no-cache-dir yt-dlp
+RUN pip3 install --no-cache-dir --break-system-packages -U yt-dlp || pip3 install --no-cache-dir -U yt-dlp
+
+# Verify Deno, Node, Python, FFmpeg, and yt-dlp JS runtime detection
+RUN deno --version && \
+    node --version && \
+    python3 --version && \
+    ffmpeg -version | head -n 1 && \
+    (yt-dlp --verbose || true)
 
 # Set working directory
 WORKDIR /app
@@ -32,3 +43,4 @@ EXPOSE 3000
 
 # Start backend server
 CMD ["node", "server.js"]
+

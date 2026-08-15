@@ -136,6 +136,48 @@ app.post('/api/change-aspect-ratio', upload.single('video'), (req, res) => {
   });
 });
 
+function formatYtDlpError(stderr, defaultMessage = 'Download failed on the server.') {
+  if (!stderr || typeof stderr !== 'string') return defaultMessage;
+  const lower = stderr.toLowerCase();
+
+  if (lower.includes('http error 429') || lower.includes('too many requests')) {
+    return 'YouTube rate limit reached (HTTP 429: Too Many Requests). YouTube is temporarily rate-limiting requests from this server. Please try again in a few minutes.';
+  }
+  if (
+    lower.includes("sign in to confirm you're not a bot") ||
+    lower.includes("confirm you're not a bot") ||
+    lower.includes('bot verification') ||
+    lower.includes('automated queries')
+  ) {
+    return "YouTube requires bot verification for this video ('Sign in to confirm you're not a bot'). Please try again later.";
+  }
+  if (lower.includes('sign in to confirm your age') || lower.includes('age-restricted') || lower.includes('age restricted')) {
+    return 'This video is age-restricted and requires sign-in verification.';
+  }
+  if (lower.includes('private video') || lower.includes('this video is private')) {
+    return 'This video is private and cannot be downloaded.';
+  }
+  if (lower.includes('members-only') || lower.includes('join this channel')) {
+    return 'This video is available to channel members only.';
+  }
+  if (lower.includes('video unavailable') || lower.includes('this video is unavailable')) {
+    return 'This video is unavailable.';
+  }
+  if (lower.includes('not available in your country') || lower.includes('geo-restricted')) {
+    return 'This video is not available in the server region (Geo-restricted).';
+  }
+
+  const match = stderr.match(/ERROR:\s*(\[[^\]]+\]\s*)?([^\r\n]+)/i);
+  if (match && match[2]) {
+    const clean = match[2].trim();
+    if (clean.length > 0 && clean.length < 250) {
+      return clean;
+    }
+  }
+
+  return defaultMessage;
+}
+
 app.get('/api/info', (req, res) => {
   const videoURL = req.query.url;
   if (!videoURL) {
@@ -152,7 +194,8 @@ app.get('/api/info', (req, res) => {
   ytdlp.on('close', (code) => {
     if (code !== 0 || !output) {
       console.error('yt-dlp error:', errorOutput);
-      return res.status(500).json({ error: 'Could not fetch video info.', details: errorOutput });
+      const userError = formatYtDlpError(errorOutput, 'Could not fetch video info.');
+      return res.status(500).json({ error: userError, details: errorOutput });
     }
     try {
       const data = JSON.parse(output);
@@ -198,7 +241,8 @@ app.get('/api/metadata', (req, res) => {
   ytdlp.on('close', (code) => {
     if (code !== 0 || !output) {
       console.error('yt-dlp metadata error:', errorOutput);
-      return res.status(500).json({ error: 'Could not fetch video metadata.', details: errorOutput });
+      const userError = formatYtDlpError(errorOutput, 'Could not fetch video metadata.');
+      return res.status(500).json({ error: userError, details: errorOutput });
     }
     try {
       const data = JSON.parse(output);
@@ -406,7 +450,9 @@ const handleDownloadRequest = (req, res) => {
 
   const infoFetch = spawn(YTDLP_PATH, [...COOKIE_ARGS, '-j', videoURL]);
   let infoOutput = '';
+  let infoError = '';
   infoFetch.stdout.on('data', (chunk) => { infoOutput += chunk.toString(); });
+  infoFetch.stderr.on('data', (chunk) => { infoError += chunk.toString(); });
 
   infoFetch.on('close', () => {
     let title = 'video';
@@ -455,16 +501,21 @@ const handleDownloadRequest = (req, res) => {
 
     console.log(`Downloading on server (${ext.toUpperCase()})...`);
     const ytdlp = spawn(YTDLP_PATH, args);
+    let downloadStderr = '';
 
     ytdlp.stderr.on('data', (chunk) => {
-      console.error('yt-dlp:', chunk.toString());
+      const msg = chunk.toString();
+      downloadStderr += msg;
+      console.error('yt-dlp:', msg);
     });
 
     ytdlp.on('close', (code) => {
       if (code !== 0 || !fs.existsSync(tempFilePath)) {
         console.error('Download failed, exit code:', code);
         if (!res.headersSent) {
-          return res.status(500).json({ error: 'Download failed on the server.' });
+          const combinedError = (downloadStderr + '\n' + infoError).trim();
+          const userError = formatYtDlpError(combinedError, 'Download failed on the server.');
+          return res.status(500).json({ error: userError, details: combinedError });
         }
         return;
       }
