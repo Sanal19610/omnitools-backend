@@ -1,0 +1,12 @@
+node_modules
+npm-debug.log
+*.exe
+temp
+uploads
+cookies.txt
+*-player-script.js
+debug-channel.html
+.git
+.gitignore
+.env
+.env.local

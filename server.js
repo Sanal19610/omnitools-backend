@@ -10,9 +10,10 @@ const upload = multer({ dest: path.join(__dirname, 'uploads') });
 const app = express();
 app.use(cors());
 
-const YTDLP_PATH = path.join(__dirname, 'yt-dlp.exe');
-const FFMPEG_PATH = path.join(__dirname, 'ffmpeg.exe');
-const COOKIE_ARGS = ['--cookies', path.join(__dirname, 'cookies.txt')];
+const YTDLP_PATH = process.env.YTDLP_PATH || (fs.existsSync(path.join(__dirname, 'yt-dlp.exe')) ? path.join(__dirname, 'yt-dlp.exe') : 'yt-dlp');
+const FFMPEG_PATH = process.env.FFMPEG_PATH || (fs.existsSync(path.join(__dirname, 'ffmpeg.exe')) ? path.join(__dirname, 'ffmpeg.exe') : 'ffmpeg');
+const COOKIE_PATH = process.env.COOKIE_PATH || path.join(__dirname, 'cookies.txt');
+const COOKIE_ARGS = fs.existsSync(COOKIE_PATH) ? ['--cookies', COOKIE_PATH] : [];
 const TEMP_DIR = path.join(__dirname, 'temp');
 
 if (!fs.existsSync(TEMP_DIR)) {
@@ -787,9 +788,9 @@ app.get('/api/instagram/download', (req, res) => {
 
 
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`OmniTools backend (yt-dlp powered) running at http://localhost:${PORT}`);
+  console.log(`OmniTools backend (yt-dlp powered) running on port ${PORT}`);
 });
 
 
