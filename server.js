@@ -8,7 +8,42 @@ const multer = require('multer');
 const upload = multer({ dest: path.join(__dirname, 'uploads') });
 
 const app = express();
-app.use(cors());
+
+// Allowed origins configuration (supports local development, Vercel deployments, and FRONTEND_URL env var)
+const allowedOrigins = [
+  'http://localhost:8080',
+  'http://127.0.0.1:8080',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:5173',
+  process.env.FRONTEND_URL,
+].filter(Boolean);
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow non-browser requests (e.g. curl, server-to-server, health check probes)
+    if (!origin) return callback(null, true);
+
+    // Allow known origins or any Vercel deployment (*.vercel.app)
+    if (
+      allowedOrigins.includes(origin) ||
+      origin.endsWith('.vercel.app') ||
+      /^https:\/\/[a-zA-Z0-9_-]+\.vercel\.app$/.test(origin)
+    ) {
+      return callback(null, true);
+    }
+
+    // Permissive fallback so any frontend domain / preview URL connects without CORS blocks
+    return callback(null, true);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  optionsSuccessStatus: 200,
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 const YTDLP_PATH = process.env.YTDLP_PATH || (fs.existsSync(path.join(__dirname, 'yt-dlp.exe')) ? path.join(__dirname, 'yt-dlp.exe') : 'yt-dlp');
 const FFMPEG_PATH = process.env.FFMPEG_PATH || (fs.existsSync(path.join(__dirname, 'ffmpeg.exe')) ? path.join(__dirname, 'ffmpeg.exe') : 'ffmpeg');
@@ -432,6 +467,10 @@ app.get('/api/debug-channel-html', (req, res) => {
     fs.writeFileSync(path.join(__dirname, 'debug-channel.html'), html);
     res.send('Saved ' + html.length + ' characters to debug-channel.html');
   });
+});
+
+app.get('/', (req, res) => {
+  res.send('OmniTools backend is running');
 });
 
 app.get('/health', (req, res) => {
