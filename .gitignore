@@ -30,8 +30,10 @@ yarn-debug.log*
 yarn-error.log*
 
 # Environment variables
+.env*
 .env
 .env.local
+*.env*
 
 # OS files
 .DS_Store
