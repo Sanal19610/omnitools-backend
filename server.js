@@ -7,6 +7,37 @@ const { spawn } = require('child_process');
 const multer = require('multer');
 const upload = multer({ dest: path.join(__dirname, 'uploads') });
 
+// Safely load local environment variables on startup without logging or exposing values
+(function loadLocalEnv() {
+  const envFiles = [
+    path.join(__dirname, '.env.local'),
+    path.join(__dirname, '.env'),
+    path.join(__dirname, '..', '.env.local'),
+    path.join(__dirname, '..', '.env')
+  ];
+  for (const envFile of envFiles) {
+    if (fs.existsSync(envFile)) {
+      try {
+        const lines = fs.readFileSync(envFile, 'utf8').split(/\r?\n/);
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed && !trimmed.startsWith('#')) {
+            const eqIdx = trimmed.indexOf('=');
+            if (eqIdx > 0) {
+              const k = trimmed.slice(0, eqIdx).trim();
+              const v = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, '');
+              if (!process.env[k]) {
+                process.env[k] = v;
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }
+  }
+})();
+
+
 const app = express();
 
 // Allowed origins configuration (supports local development, Vercel deployments, and FRONTEND_URL env var)
@@ -213,11 +244,75 @@ function formatYtDlpError(stderr, defaultMessage = 'Download failed on the serve
   return defaultMessage;
 }
 
-app.get('/api/info', (req, res) => {
+// Helper: Extract 11-char YouTube video ID
+function extractYouTubeVideoId(url) {
+  if (!url) return null;
+  const match = String(url).match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=|shorts\/))([\w-]{11})/);
+  return match ? match[1] : null;
+}
+
+// Helper: Parse ISO 8601 duration (e.g. PT3M15S) into total seconds
+function parseIsoDuration(durationStr) {
+  if (!durationStr) return 0;
+  const match = durationStr.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return 0;
+  const hours = parseInt(match[1] || '0', 10);
+  const minutes = parseInt(match[2] || '0', 10);
+  const seconds = parseInt(match[3] || '0', 10);
+  return hours * 3600 + minutes * 60 + seconds;
+}
+
+// Fetch YouTube video details via official YouTube Data API v3 (Server-only)
+// Secure: Key is read strictly from process.env, never exposed to client, and never logged
+async function fetchYouTubeDataFromApi(videoId) {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey || !videoId) return null;
+
+  try {
+    const apiUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${encodeURIComponent(videoId)}&key=${apiKey}`;
+    const response = await fetch(apiUrl);
+    if (!response.ok) {
+      // Never log the API key or raw URL
+      console.warn(`YouTube Data API lookup returned HTTP status ${response.status}`);
+      return null;
+    }
+
+    const data = await response.json();
+    if (!data.items || data.items.length === 0) {
+      return null;
+    }
+
+    const item = data.items[0];
+    const snippet = item.snippet || {};
+    const statistics = item.statistics || {};
+    const contentDetails = item.contentDetails || {};
+
+    return {
+      title: snippet.title || `YouTube Video (${videoId})`,
+      description: snippet.description || '',
+      tags: snippet.tags || [],
+      channelName: snippet.channelTitle || '',
+      channelUrl: snippet.channelId ? `https://www.youtube.com/channel/${snippet.channelId}` : '',
+      subscriberCount: null,
+      viewCount: statistics.viewCount ? parseInt(statistics.viewCount, 10) : null,
+      uploadDate: snippet.publishedAt ? snippet.publishedAt.split('T')[0] : '',
+      thumbnail: snippet.thumbnails?.maxres?.url || snippet.thumbnails?.high?.url || snippet.thumbnails?.default?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+      lengthSeconds: parseIsoDuration(contentDetails.duration),
+    };
+  } catch (err) {
+    // Sanitized log - never log the API key
+    console.warn('YouTube Data API lookup encountered a network error, falling back.');
+    return null;
+  }
+}
+
+app.get('/api/info', async (req, res) => {
   const videoURL = req.query.url;
   if (!videoURL) {
     return res.status(400).json({ error: 'Please provide a YouTube URL.' });
   }
+
+  const videoId = extractYouTubeVideoId(videoURL);
 
   const ytdlp = spawn(YTDLP_PATH, ['-j', videoURL]);
   let output = '';
@@ -226,8 +321,30 @@ app.get('/api/info', (req, res) => {
   ytdlp.stdout.on('data', (chunk) => { output += chunk.toString(); });
   ytdlp.stderr.on('data', (chunk) => { errorOutput += chunk.toString(); });
 
-  ytdlp.on('close', (code) => {
+  ytdlp.on('close', async (code) => {
     if (code !== 0 || !output) {
+      // If yt-dlp failed (e.g., datacenter bot-block on cloud hosting), try YouTube Data API fallback
+      if (videoId && process.env.YOUTUBE_API_KEY) {
+        try {
+          const apiData = await fetchYouTubeDataFromApi(videoId);
+          if (apiData) {
+            return res.json({
+              title: apiData.title,
+              author: apiData.channelName,
+              thumbnail: apiData.thumbnail,
+              lengthSeconds: apiData.lengthSeconds,
+              formats: [
+                { formatId: '1080p', quality: '1080p HD', height: 1080, ext: 'mp4', hasAudio: true, sizeBytes: null },
+                { formatId: '720p', quality: '720p Standard', height: 720, ext: 'mp4', hasAudio: true, sizeBytes: null },
+                { formatId: '480p', quality: '480p SD', height: 480, ext: 'mp4', hasAudio: true, sizeBytes: null },
+                { formatId: '360p', quality: '360p Basic', height: 360, ext: 'mp4', hasAudio: true, sizeBytes: null },
+                { formatId: 'audio', quality: 'Audio Only (MP3)', height: 0, ext: 'mp3', hasAudio: true, sizeBytes: null }
+              ],
+            });
+          }
+        } catch (_) {}
+      }
+
       console.error('yt-dlp error:', errorOutput);
       const userError = formatYtDlpError(errorOutput, 'Could not fetch video info.');
       return res.status(500).json({ error: userError, details: errorOutput });
@@ -260,10 +377,33 @@ app.get('/api/info', (req, res) => {
   });
 });
 
-app.get('/api/metadata', (req, res) => {
+app.get('/api/metadata', async (req, res) => {
   const videoURL = req.query.url;
   if (!videoURL) {
     return res.status(400).json({ error: 'Please provide a YouTube URL.' });
+  }
+
+  const videoId = extractYouTubeVideoId(videoURL);
+
+  // If server has YOUTUBE_API_KEY, use official YouTube Data API first for high speed & reliability
+  if (videoId && process.env.YOUTUBE_API_KEY) {
+    try {
+      const apiMetadata = await fetchYouTubeDataFromApi(videoId);
+      if (apiMetadata) {
+        return res.json({
+          title: apiMetadata.title,
+          description: apiMetadata.description,
+          tags: apiMetadata.tags,
+          channelName: apiMetadata.channelName,
+          channelUrl: apiMetadata.channelUrl,
+          subscriberCount: apiMetadata.subscriberCount,
+          viewCount: apiMetadata.viewCount,
+          uploadDate: apiMetadata.uploadDate,
+        });
+      }
+    } catch (_) {
+      // Proceed to yt-dlp fallback
+    }
   }
 
   const ytdlp = spawn(YTDLP_PATH, ['-j', videoURL]);
