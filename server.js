@@ -11,6 +11,8 @@ const app = express();
 
 // Allowed origins configuration (supports local development, Vercel deployments, and FRONTEND_URL env var)
 const allowedOrigins = [
+  'https://omnitools.vercel.app',
+  'https://omnitools-website.vercel.app',
   'http://localhost:8080',
   'http://127.0.0.1:8080',
   'http://localhost:3000',
