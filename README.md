@@ -13,8 +13,6 @@ A high-performance Express.js backend server for media processing, YouTube & Ins
   - Channel analytics, keyword discovery, and channel metadata (`/api/channel-info`, `/api/channel-keywords`)
 - **Instagram Processing**:
   - Instagram post/reel metadata & media stream links (`/api/instagram/info`, `/api/instagram/download`)
-- **Video Conversion**:
-  - Aspect ratio converter (9:16, 16:9, 1:1, 4:5 with crop or pad mode) using `ffmpeg` (`/api/change-aspect-ratio`)
 - **Automated Lifecycle & Cleanup**:
   - Startup temp file cleanup and periodic 5-minute safety-net garbage collection.
 
@@ -73,7 +71,7 @@ By default, the server runs on port **3000** (`http://localhost:3000`).
 | `GET` | `/api/download?url=<URL>&quality=<TAG>&format=<mp4\|mp3>` | Download/stream processed media directly |
 | `GET` | `/api/instagram/info?url=<IG_URL>` | Get Instagram post/reel details and media streams |
 | `GET` | `/api/instagram/download?url=<IG_URL>` | Download Instagram video/image media |
-| `POST` | `/api/change-aspect-ratio` | Upload a video and convert aspect ratio (`crop` / `pad`) |
+| `GET` | `/api/keywords?url=<URL_OR_HANDLE>` | Extract hidden video tags or channel SEO keywords |
 
 ---
 
