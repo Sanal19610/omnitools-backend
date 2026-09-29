@@ -987,6 +987,253 @@ app.get('/api/instagram/download', (req, res) => {
   runDownload();
 });
 
+// ------------------------------------------------------------------
+// ROUTE: /api/keywords - Keyword & Tag Extractor (Video or Channel)
+// ------------------------------------------------------------------
+function detectYouTubeInputType(input) {
+  if (!input || typeof input !== 'string') return null;
+  const trimmed = input.trim();
+
+  // 1. YouTube Video URL (watch, youtu.be, shorts, embed, v)
+  const videoMatch = trimmed.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=|shorts\/))([\w-]{11})/i);
+  if (videoMatch) {
+    return { type: 'video', id: videoMatch[1] };
+  }
+
+  // 2. Raw 11-character video ID
+  if (/^[\w-]{11}$/.test(trimmed) && !trimmed.startsWith('@')) {
+    return { type: 'video', id: trimmed };
+  }
+
+  // 3. Channel ID (starts with UC...) e.g. youtube.com/channel/UC... or raw UC...
+  const channelIdMatch = trimmed.match(/(?:youtube\.com\/channel\/|^)(UC[\w-]{21,23})/i);
+  if (channelIdMatch) {
+    return { type: 'channel', channelId: channelIdMatch[1] };
+  }
+
+  // 4. Handle with @ (e.g. youtube.com/@name or @name)
+  const handleMatch = trimmed.match(/(?:youtube\.com\/)?@([\w.-]+)/i);
+  if (handleMatch) {
+    return { type: 'channel', handle: `@${handleMatch[1]}` };
+  }
+
+  if (trimmed.startsWith('@')) {
+    return { type: 'channel', handle: trimmed };
+  }
+
+  // 5. Custom / user URL (youtube.com/c/Name or youtube.com/user/Name)
+  const customMatch = trimmed.match(/youtube\.com\/(?:c\/|user\/)([\w.-]+)/i);
+  if (customMatch) {
+    return { type: 'channel', forUsername: customMatch[1] };
+  }
+
+  // 6. Vanity channel slug: youtube.com/Name
+  const vanityMatch = trimmed.match(/youtube\.com\/([^/?#]+)/i);
+  if (vanityMatch) {
+    const slug = vanityMatch[1].replace(/^@/, '');
+    const reserved = ['watch', 'shorts', 'embed', 'playlist', 'results', 'feed', 'explore', 'gaming', 'trending', 'about'];
+    if (!reserved.includes(slug.toLowerCase())) {
+      return { type: 'channel', handle: `@${slug}` };
+    }
+  }
+
+  // 7. Plain handle without @ (e.g. MrBeast)
+  if (/^[\w.-]{3,30}$/.test(trimmed)) {
+    return { type: 'channel', handle: `@${trimmed}` };
+  }
+
+  return null;
+}
+
+function parseYouTubeApiKeywords(rawStr) {
+  if (!rawStr || typeof rawStr !== 'string') return [];
+  const trimmed = rawStr.trim();
+  if (!trimmed) return [];
+
+  // Phrases inside double quotes stay together as one keyword; otherwise split by spaces
+  const regex = /"([^"]+)"|(\S+)/g;
+  const keywords = [];
+  let match;
+  while ((match = regex.exec(trimmed)) !== null) {
+    const kw = (match[1] || match[2] || '').trim();
+    if (kw && !keywords.includes(kw)) {
+      keywords.push(kw);
+    }
+  }
+  return keywords;
+}
+
+function formatSubscribersCount(count) {
+  if (!count) return null;
+  const num = parseInt(count, 10);
+  if (isNaN(num)) return null;
+  if (num >= 1000000000) return (num / 1000000000).toFixed(1).replace(/\.0$/, '') + 'B Subscribers';
+  if (num >= 1000000) return (num / 1000000).toFixed(1).replace(/\.0$/, '') + 'M Subscribers';
+  if (num >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'K Subscribers';
+  return num + ' Subscribers';
+}
+
+app.get('/api/keywords', async (req, res) => {
+  const rawInput = req.query.url || req.query.input;
+  if (!rawInput || typeof rawInput !== 'string' || !rawInput.trim()) {
+    return res.status(400).json({
+      error: 'Please enter a valid YouTube video link, Shorts URL, or channel handle / URL.'
+    });
+  }
+
+  const trimmed = rawInput.trim();
+  const apiKey = process.env.YOUTUBE_API_KEY;
+
+  if (!apiKey) {
+    return res.status(500).json({
+      error: 'YouTube API key is not configured on the server. Please check your environment variables.'
+    });
+  }
+
+  const detected = detectYouTubeInputType(trimmed);
+  if (!detected) {
+    return res.status(400).json({
+      error: 'Invalid YouTube link. Please enter a valid YouTube video URL, Shorts link, or channel handle (@name / channel URL).'
+    });
+  }
+
+  try {
+    if (detected.type === 'video') {
+      // Call YouTube Data API v3 videos.list with part=snippet
+      const videoApiUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${encodeURIComponent(detected.id)}&key=${apiKey}`;
+      const apiRes = await fetch(videoApiUrl);
+
+      if (!apiRes.ok) {
+        if (apiRes.status === 403) {
+          const errData = await apiRes.json().catch(() => ({}));
+          const reason = errData?.error?.errors?.[0]?.reason;
+          if (reason === 'quotaExceeded' || reason === 'dailyLimitExceeded') {
+            return res.status(429).json({
+              error: 'YouTube Data API quota exceeded. Please try again later or check your API quota limits.'
+            });
+          }
+          return res.status(403).json({
+            error: 'Access denied by YouTube Data API. Please check your API key permissions.'
+          });
+        }
+        return res.status(apiRes.status).json({
+          error: `YouTube Data API returned error (HTTP ${apiRes.status}).`
+        });
+      }
+
+      const data = await apiRes.json();
+      if (!data.items || data.items.length === 0) {
+        return res.status(404).json({
+          error: 'Video not found. Please check the video URL or ID and verify it is public.'
+        });
+      }
+
+      const item = data.items[0];
+      const snippet = item.snippet || {};
+      const thumbnail = snippet.thumbnails?.maxres?.url
+        || snippet.thumbnails?.high?.url
+        || snippet.thumbnails?.medium?.url
+        || snippet.thumbnails?.default?.url
+        || `https://i.ytimg.com/vi/${detected.id}/hqdefault.jpg`;
+
+      const tags = Array.isArray(snippet.tags) ? snippet.tags : [];
+
+      return res.json({
+        type: 'video',
+        title: snippet.title || `YouTube Video (${detected.id})`,
+        channelName: snippet.channelTitle || 'YouTube Creator',
+        thumbnail: thumbnail,
+        videoId: detected.id,
+        tags: tags,
+        count: tags.length,
+      });
+    }
+
+    if (detected.type === 'channel') {
+      // Call YouTube Data API v3 channels.list with part=snippet,brandingSettings,statistics
+      let channelApiUrl = '';
+      if (detected.channelId) {
+        channelApiUrl = `https://www.googleapis.com/youtube/v3/channels?part=snippet,brandingSettings,statistics&id=${encodeURIComponent(detected.channelId)}&key=${apiKey}`;
+      } else if (detected.handle) {
+        channelApiUrl = `https://www.googleapis.com/youtube/v3/channels?part=snippet,brandingSettings,statistics&forHandle=${encodeURIComponent(detected.handle)}&key=${apiKey}`;
+      } else if (detected.forUsername) {
+        channelApiUrl = `https://www.googleapis.com/youtube/v3/channels?part=snippet,brandingSettings,statistics&forUsername=${encodeURIComponent(detected.forUsername)}&key=${apiKey}`;
+      }
+
+      let apiRes = await fetch(channelApiUrl);
+      let data = apiRes.ok ? await apiRes.json() : null;
+
+      // If forHandle with @ did not match, try without @ as fallback
+      if (apiRes.ok && (!data?.items || data.items.length === 0) && detected.handle) {
+        const noAt = detected.handle.replace(/^@/, '');
+        const retryUrl = `https://www.googleapis.com/youtube/v3/channels?part=snippet,brandingSettings,statistics&forHandle=${encodeURIComponent(noAt)}&key=${apiKey}`;
+        const retryRes = await fetch(retryUrl);
+        if (retryRes.ok) {
+          const retryData = await retryRes.json();
+          if (retryData?.items && retryData.items.length > 0) {
+            apiRes = retryRes;
+            data = retryData;
+          }
+        }
+      }
+
+      if (!apiRes.ok) {
+        if (apiRes.status === 403) {
+          const errData = await apiRes.json().catch(() => ({}));
+          const reason = errData?.error?.errors?.[0]?.reason;
+          if (reason === 'quotaExceeded' || reason === 'dailyLimitExceeded') {
+            return res.status(429).json({
+              error: 'YouTube Data API quota exceeded. Please try again later or check your API quota limits.'
+            });
+          }
+          return res.status(403).json({
+            error: 'Access denied by YouTube Data API. Please check your API key permissions.'
+          });
+        }
+        return res.status(apiRes.status).json({
+          error: `YouTube Data API returned error (HTTP ${apiRes.status}).`
+        });
+      }
+
+      if (!data?.items || data.items.length === 0) {
+        return res.status(404).json({
+          error: 'Channel not found. Please check the channel handle, name, or channel URL.'
+        });
+      }
+
+      const item = data.items[0];
+      const snippet = item.snippet || {};
+      const statistics = item.statistics || {};
+      const brandingSettings = item.brandingSettings || {};
+
+      const avatar = snippet.thumbnails?.high?.url
+        || snippet.thumbnails?.medium?.url
+        || snippet.thumbnails?.default?.url
+        || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=300&q=80';
+
+      const rawKeywords = brandingSettings.channel?.keywords || '';
+      const parsedKeywords = parseYouTubeApiKeywords(rawKeywords);
+
+      return res.json({
+        type: 'channel',
+        channelName: snippet.title || 'YouTube Channel',
+        avatar: avatar,
+        subscriberCount: statistics.subscriberCount || null,
+        formattedSubscribers: formatSubscribersCount(statistics.subscriberCount),
+        tags: parsedKeywords,
+        count: parsedKeywords.length,
+      });
+    }
+
+  } catch (netErr) {
+    // Never log the API key or raw URL with key
+    console.warn('Network error while connecting to YouTube Data API');
+    return res.status(502).json({
+      error: 'Failed to connect to YouTube servers. Please check your network connection and try again.'
+    });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`OmniTools backend (yt-dlp powered) running on port ${PORT}`);
